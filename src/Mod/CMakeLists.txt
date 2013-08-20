@@ -53,5 +53,6 @@ add_subdirectory(Plot)
 
 add_subdirectory(Spreadsheet)
 
+add_subdirectory(DDA)
 
 
