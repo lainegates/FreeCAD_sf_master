@@ -304,10 +304,9 @@ class fcformat:
 
     def formatObject(self,obj,dxfobj=None):
         "applies color and linetype to objects"
-        if self.paramstyle == 0:
-            if hasattr(obj.ViewObject,"TextColor"):
-                obj.ViewObject.TextColor = (0.0,0.0,0.0)
-        elif self.paramstyle == 1:
+        if hasattr(obj.ViewObject,"TextColor"):
+            obj.ViewObject.TextColor = (0.0,0.0,0.0)
+        if self.paramstyle == 1:
             if hasattr(obj.ViewObject,"TextColor"):
                 obj.ViewObject.TextColor = self.col
             else:
@@ -638,7 +637,7 @@ def drawSpline(spline,shapemode=False):
         warn(spline)
     return None
     
-def drawBlock(blockref,num=None):
+def drawBlock(blockref,num=None,createObject=False):
     "returns a shape from a dxf block reference"
     if not fmt.paramstarblocks:
         if blockref.name[0] == '*':
@@ -683,31 +682,52 @@ def drawBlock(blockref,num=None):
     except: warn(blockref)
     if shape:
         blockshapes[blockref.name]=shape
+        if createObject:
+            newob=doc.addObject("Part::Feature",blockref.name)
+            newob.Shape = shape
+            blockobjects[blockref.name] = newob
+            return newob
         return shape
     return None
 
-def drawInsert(insert,num=None):
-    if blockshapes.has_key(insert):
-        shape = blockshapes[insert.block].copy()
-    else:
-        shape = None
-        for b in drawing.blocks.data:
-            if b.name == insert.block:
-                shape = drawBlock(b,num)
+def drawInsert(insert,num=None,clone=False):
     if fmt.paramtext:
         attrs = attribs(insert)
         for a in attrs:
             addText(a,attrib=True)
-    if shape:
-        pos = vec(insert.loc)
-        rot = math.radians(insert.rotation)
-        scale = insert.scale
-        tsf = FreeCAD.Matrix()
-        tsf.scale(scale[0],scale[1],0) # for some reason z must be 0 to work
-        tsf.rotateZ(rot)
-        shape = shape.transformGeometry(tsf)
-        shape.translate(pos)
-        return shape
+    if clone:
+        if blockobjects.has_key(insert.block):
+            newob = Draft.clone(blockobjects[insert.block])
+            tsf = FreeCAD.Matrix()
+            rot = math.radians(insert.rotation)
+            pos = vec(insert.loc)
+            tsf.move(pos)
+            tsf.rotateZ(rot)
+            sc = insert.scale
+            sc = FreeCAD.Vector(sc[0],sc[1],0)
+            newob.Placement = FreeCAD.Placement(tsf)
+            newob.Scale = sc
+            return newob
+        else:
+            shape = None
+    else:
+        if blockshapes.has_key(insert):
+            shape = blockshapes[insert.block].copy()
+        else:
+            shape = None
+            for b in drawing.blocks.data:
+                if b.name == insert.block:
+                    shape = drawBlock(b,num)
+        if shape:
+            pos = vec(insert.loc)
+            rot = math.radians(insert.rotation)
+            scale = insert.scale
+            tsf = FreeCAD.Matrix()
+            tsf.scale(scale[0],scale[1],0) # for some reason z must be 0 to work
+            tsf.rotateZ(rot)
+            shape = shape.transformGeometry(tsf)
+            shape.translate(pos)
+            return shape
     return None
 
 def drawLayerBlock(objlist):
@@ -791,6 +811,10 @@ def addText(text,attrib=False):
         elif hasattr(text,"rotation"):
             if text.rotation:
                 Draft.rotate(newob,text.rotation)
+        if attrib:
+            attrot = rawValue(text,50)
+            if attrot:
+                Draft.rotate(newob,attrot)
         newob.LabelText = val.split("\n")
         newob.Position = pos
         if gui:
@@ -824,6 +848,8 @@ def processdxf(document,filename):
     doc = document
     global blockshapes
     blockshapes = {}
+    global blockobjects
+    blockobjects = {}
     global badobjects
     badobjects = []
     global layerBlocks
@@ -1027,7 +1053,7 @@ def processdxf(document,filename):
         for text in texts:
             if fmt.dxflayout or (not rawValue(text,67)):
                 addText(text)
-					
+
     else: FreeCAD.Console.PrintMessage("skipping texts...\n")
 
     # drawing 3D objects
@@ -1080,6 +1106,12 @@ def processdxf(document,filename):
                     pt = FreeCAD.Vector(x1,y1,z1)
                     p1 = FreeCAD.Vector(x2,y2,z2)
                     p2 = FreeCAD.Vector(x3,y3,z3)
+                    if align >= 128:
+                        align -= 128
+                    elif align >= 64:
+                        align -= 64
+                    elif align >= 32:
+                        align -= 32
                     if align == 0:
                         if angle in [0,180]:
                             p2 = FreeCAD.Vector(x3,y2,z2)
@@ -1190,10 +1222,16 @@ def processdxf(document,filename):
         FreeCAD.Console.PrintMessage("drawing "+str(len(inserts))+" blocks...\n")
         blockrefs = drawing.blocks.data
         for ref in blockrefs:
-            drawBlock(ref)
+            if fmt.paramstyle >= 4:
+                drawBlock(ref,createObject=True)
+            else:
+                drawBlock(ref,createObject=False)
         num = 0
         for insert in inserts:
-            shape = drawInsert(insert,num)
+            if (fmt.paramstyle >= 4) and not(fmt.makeBlocks):
+                shape = drawInsert(insert,num,clone=True)
+            else:
+                shape = drawInsert(insert,num)
             if shape:
                 if fmt.makeBlocks:
                     addToBlock(shape,insert.layer)
@@ -1211,7 +1249,14 @@ def processdxf(document,filename):
             if shape:
                 newob = addObject(shape,k)
     del layerBlocks
-                                        
+    
+    # hide block objects, if any
+    
+    for k,o in blockobjects.iteritems():
+        if o.ViewObject:
+            o.ViewObject.hide()
+    del blockobjects
+    
     # finishing
 
     print "done processing"
